@@ -30,12 +30,11 @@
             android:launchMode="singleInstance"
             android:stateNotNeeded="true"
             android:screenOrientation="landscape"
+            android:theme="@style/Theme.HeadunitLauncher"
             android:configChanges="orientation|screenSize|keyboardHidden">
-
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
@@ -55,6 +54,6 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
-    </application>
 
+    </application>
 </manifest>

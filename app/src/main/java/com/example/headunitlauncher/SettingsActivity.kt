@@ -2,8 +2,10 @@ package com.example.headunitlauncher
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
@@ -144,7 +146,7 @@ class SettingsActivity : AppCompatActivity() {
             prefs.edit().putBoolean("startup_view_speedo", checkedId == R.id.radio_start_speedo).apply()
         }
 
-        // UI Scaling logic (Now inside Options section)
+        // UI Scaling logic
         val scaleSeekBar = findViewById<SeekBar>(R.id.settings_scale_seekbar)
         val scaleValueText = findViewById<TextView>(R.id.settings_scale_value)
         val currentScale = prefs.getInt("ui_scale", 100)
@@ -201,18 +203,33 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun updateSoftwareInfo() {
         try {
+            // Memory & Storage Calculations
             val actManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val memInfo = ActivityManager.MemoryInfo()
             actManager.getMemoryInfo(memInfo)
             val totalRam = Math.round(memInfo.totalMem / 1073741824.0)
+
             val stat = StatFs(Environment.getDataDirectory().path)
             val totalStorage = (stat.blockCountLong * stat.blockSizeLong) / 1073741824L
             val availStorage = (stat.availableBlocksLong * stat.blockSizeLong) / 1073741824L
             val usedStorage = totalStorage - availStorage
+
+            // Get Version from Gradle (The "Build Version" fix)
+            val currentVersionName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0)).versionName
+            } else {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }
+
+            // Update UI
             findViewById<TextView>(R.id.info_device).text = "${Build.MODEL}\nSystem RAM: ${totalRam}GB"
             findViewById<TextView>(R.id.info_storage).text = "Used: ${usedStorage}GB / Total: ${totalStorage}GB"
-            findViewById<TextView>(R.id.info_version).text = "Build Version: 1.0.8 (Stable)\nAndroid OS: ${Build.VERSION.RELEASE}"
-        } catch (e: Exception) { e.printStackTrace() }
+            findViewById<TextView>(R.id.info_version).text = "Build Version: $currentVersionName\nAndroid OS: ${Build.VERSION.RELEASE}"
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            findViewById<TextView>(R.id.info_version).text = "Build Version: 1.0.8 (Fallback)"
+        }
     }
 
     private fun openGallery(launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
