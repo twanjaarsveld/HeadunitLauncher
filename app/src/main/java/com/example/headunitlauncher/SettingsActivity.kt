@@ -2,8 +2,11 @@ package com.example.headunitlauncher
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
@@ -19,11 +22,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.appcompat.widget.SwitchCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import org.json.JSONObject
+import java.io.File
+import java.net.URL
+import java.util.*
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -42,8 +50,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnAllApps: Button
     private lateinit var btnOptions: Button
 
-    // Track the active tab ID to survive recreation
     private var activeTabId: Int = R.id.settings_btn_info
+
+    private var downloadId: Long = -1
+    private lateinit var downloadManager: DownloadManager
 
     override fun attachBaseContext(newBase: Context) {
         val prefs = newBase.getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
@@ -100,6 +110,8 @@ class SettingsActivity : AppCompatActivity() {
         hideSystemUI()
         setContentView(R.layout.activity_settings)
 
+        downloadManager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+
         sectionApps = findViewById(R.id.section_apps)
         sectionAllApps = findViewById(R.id.section_all_apps)
         sectionInfo = findViewById(R.id.section_info)
@@ -124,10 +136,13 @@ class SettingsActivity : AppCompatActivity() {
             openGallery(pickImageLauncher)
         }
 
+        findViewById<Button>(R.id.btn_check_update)?.setOnClickListener {
+            checkGitHubUpdate()
+        }
+
         setupAppSelection(prefs)
         setupOptionsLogic(prefs)
 
-        // Restore tab or default to Info
         if (savedInstanceState == null) {
             btnInfo.performClick()
         }
@@ -138,6 +153,128 @@ class SettingsActivity : AppCompatActivity() {
             val mainIntent = Intent.makeRestartActivityTask(intent?.component)
             startActivity(mainIntent)
             Runtime.getRuntime().exit(0)
+        }
+    }
+
+    private fun checkGitHubUpdate() {
+        val currentVersion = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0)).versionName
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }
+        } catch (e: Exception) {
+            "0.0"
+        } ?: "0.0"
+        val githubUrl = "https://api.github.com/repos/twanjaarsveld/HeadunitLauncher/releases/latest"
+
+        Thread {
+            try {
+                val response = URL(githubUrl).readText()
+                val json = JSONObject(response)
+                val latestTag = json.getString("tag_name")
+                val assets = json.getJSONArray("assets")
+
+                var finalDownloadUrl: String? = null
+                for (i in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(i)
+                    if (asset.getString("name") == "HeadunitLauncher.apk") {
+                        finalDownloadUrl = asset.getString("browser_download_url")
+                        break
+                    }
+                }
+
+                finalDownloadUrl?.let { nonNullUrl ->
+                    if (isNewerVersion(currentVersion, latestTag)) {
+                        runOnUiThread {
+                            // We use the local 'nonNullUrl' variable here
+                            startDownload(nonNullUrl)
+                        }
+                    } else {
+                        runOnUiThread { Toast.makeText(this, "App is up to date!", Toast.LENGTH_SHORT).show() }
+                    }
+                } ?: run {
+                    runOnUiThread { Toast.makeText(this, "HeadunitLauncher.apk not found in release", Toast.LENGTH_SHORT).show() }
+                }
+
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this, "Check failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    private fun isNewerVersion(current: String, latest: String): Boolean {
+        val cleanCurrent = current.replace(Regex("^[^0-9.]+"), "")
+        val cleanLatest = latest.replace(Regex("^[^0-9.]+"), "")
+
+        val currParts = cleanCurrent.split(".").map { it.toIntOrNull() ?: 0 }
+        val lateParts = cleanLatest.split(".").map { it.toIntOrNull() ?: 0 }
+
+        for (i in 0 until maxOf(currParts.size, lateParts.size)) {
+            val c = currParts.getOrElse(i) { 0 }
+            val l = lateParts.getOrElse(i) { 0 }
+            if (l > c) return true
+            if (c > l) return false
+        }
+        return false
+    }
+
+    private fun startDownload(url: String) {
+        val request = DownloadManager.Request(Uri.parse(url))
+            .setTitle("Launcher Update")
+            .setDescription("Downloading HeadunitLauncher.apk")
+            .setMimeType("application/vnd.android.package-archive")
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "HeadunitLauncher.apk")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+
+        downloadId = downloadManager.enqueue(request)
+        findViewById<View>(R.id.update_container)?.visibility = View.VISIBLE
+        trackProgress()
+    }
+
+    private fun trackProgress() {
+        val progressBar = findViewById<ProgressBar>(R.id.update_progress_bar)
+        val statusText = findViewById<TextView>(R.id.tv_update_status)
+
+        val timer = Timer()
+        timer.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                val query = DownloadManager.Query().setFilterById(downloadId)
+                val cursor = downloadManager.query(query)
+                if (cursor.moveToFirst()) {
+                    val bytesDownloaded = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                    val bytesTotal = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                    val status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS))
+
+                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                        timer.cancel()
+                        runOnUiThread { installApk() }
+                    }
+
+                    if (bytesTotal > 0) {
+                        val progress = ((bytesDownloaded * 100L) / bytesTotal).toInt()
+                        runOnUiThread {
+                            progressBar?.progress = progress
+                            statusText?.text = "Downloading: $progress%"
+                        }
+                    }
+                }
+                cursor.close()
+            }
+        }, 0, 500)
+    }
+
+    private fun installApk() {
+        val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HeadunitLauncher.apk")
+        if (file.exists()) {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
         }
     }
 
@@ -166,14 +303,12 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun setupOptionsLogic(prefs: android.content.SharedPreferences) {
-        // Startup View Logic
         val startWithSpeedo = prefs.getBoolean("startup_view_speedo", false)
         findViewById<RadioButton>(if (startWithSpeedo) R.id.radio_start_speedo else R.id.radio_start_clock)?.isChecked = true
         findViewById<RadioGroup>(R.id.radio_group_startup)?.setOnCheckedChangeListener { _, checkedId ->
             prefs.edit().putBoolean("startup_view_speedo", checkedId == R.id.radio_start_speedo).apply()
         }
 
-        // Dark Mode Logic
         val darkModeSwitch = findViewById<SwitchCompat>(R.id.switch_dark_mode)
         darkModeSwitch?.isChecked = prefs.getBoolean("is_dark_mode", true)
         darkModeSwitch?.setOnCheckedChangeListener { _, isChecked ->
@@ -184,7 +319,6 @@ class SettingsActivity : AppCompatActivity() {
             recreate()
         }
 
-        // Display Scaling Logic
         val scaleSeekBar = findViewById<SeekBar>(R.id.settings_scale_seekbar)
         val scaleValueText = findViewById<TextView>(R.id.settings_scale_value)
         val currentScale = prefs.getInt("ui_scale", 100)
@@ -202,7 +336,6 @@ class SettingsActivity : AppCompatActivity() {
             }
         })
 
-        // NEW: Brightness Logic
         val brightnessSeekBar = findViewById<SeekBar>(R.id.settings_brightness_seekbar)
         try {
             val curBrightness = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
