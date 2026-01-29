@@ -1,6 +1,14 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.HeadunitLauncher" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="android:windowBackground">#000000</item>
-        <item name="android:statusBarColor">#000000</item>
+    <style name="Theme.HeadunitLauncher" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#3D5AFE</item>
+        <item name="colorPrimaryVariant">#3700B3</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+
+        <item name="android:statusBarColor">@android:color/transparent</item>
+
+        <item name="mainBgColor">#111111</item>
+        <item name="sidebarBgColor">#000000</item>
+        <item name="cardBgColor">#1A1A1A</item>
+        <item name="primaryTextColor">#FFFFFF</item>
     </style>
 </resources>

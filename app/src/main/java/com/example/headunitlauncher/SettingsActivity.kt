@@ -2,7 +2,6 @@ package com.example.headunitlauncher
 
 import android.app.Activity
 import android.app.ActivityManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +9,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.*
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -17,6 +17,8 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -40,11 +42,23 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnAllApps: Button
     private lateinit var btnOptions: Button
 
+    // Track the active tab ID to survive recreation
+    private var activeTabId: Int = R.id.settings_btn_info
+
     override fun attachBaseContext(newBase: Context) {
         val prefs = newBase.getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
         val scalePercent = prefs.getInt("ui_scale", 100)
+
         val config = Configuration(newBase.resources.configuration)
         config.densityDpi = (newBase.resources.displayMetrics.densityDpi * (scalePercent / 100f)).toInt()
+
+        val isDarkMode = prefs.getBoolean("is_dark_mode", true)
+        config.uiMode = if (isDarkMode) {
+            (config.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_YES
+        } else {
+            (config.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_NO
+        }
+
         val context = newBase.createConfigurationContext(config)
         super.attachBaseContext(context)
     }
@@ -76,25 +90,26 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val prefs = getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
+        val isDarkMode = prefs.getBoolean("is_dark_mode", true)
+        AppCompatDelegate.setDefaultNightMode(
+            if (isDarkMode) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+        )
+
         super.onCreate(savedInstanceState)
         hideSystemUI()
         setContentView(R.layout.activity_settings)
 
-        val prefs = getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
-
-        // Sections
         sectionApps = findViewById(R.id.section_apps)
         sectionAllApps = findViewById(R.id.section_all_apps)
         sectionInfo = findViewById(R.id.section_info)
         sectionOptions = findViewById(R.id.section_startup)
 
-        // Buttons
         btnInfo = findViewById(R.id.settings_btn_info)
         btnApps = findViewById(R.id.settings_btn_apps)
         btnAllApps = findViewById(R.id.settings_btn_all_apps)
         btnOptions = findViewById(R.id.settings_btn_startup)
 
-        // Navigation
         btnInfo.setOnClickListener { selectTab(it as Button, sectionInfo); updateSoftwareInfo() }
         btnApps.setOnClickListener { selectTab(it as Button, sectionApps) }
         btnAllApps.setOnClickListener { selectTab(it as Button, sectionAllApps) }
@@ -109,24 +124,36 @@ class SettingsActivity : AppCompatActivity() {
             openGallery(pickImageLauncher)
         }
 
-        // Setup Logic
         setupAppSelection(prefs)
         setupOptionsLogic(prefs)
 
-        // DEFAULT TO SOFTWARE INFO ON OPEN
-        btnInfo.performClick()
+        // Restore tab or default to Info
+        if (savedInstanceState == null) {
+            btnInfo.performClick()
+        }
 
-        // SAVE & EXIT
         findViewById<Button>(R.id.btn_save_settings).setOnClickListener {
             prefs.edit().putStringSet("allowed_apps", adapter.getSelectedApps()).apply()
-            val intent = Intent(this, MainActivity::class.java)
-            intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            startActivity(intent)
-            finish()
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            val mainIntent = Intent.makeRestartActivityTask(intent?.component)
+            startActivity(mainIntent)
+            Runtime.getRuntime().exit(0)
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt("ACTIVE_TAB", activeTabId)
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        activeTabId = savedInstanceState.getInt("ACTIVE_TAB", R.id.settings_btn_info)
+        findViewById<Button>(activeTabId)?.performClick()
+    }
+
     private fun selectTab(selectedBtn: Button, targetSection: View) {
+        activeTabId = selectedBtn.id
         val buttons = listOf(btnInfo, btnApps, btnAllApps, btnOptions)
         buttons.forEach { it.setTextColor(Color.parseColor("#AAAAAA")) }
         selectedBtn.setTextColor(Color.WHITE)
@@ -139,21 +166,30 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun setupOptionsLogic(prefs: android.content.SharedPreferences) {
-        // Startup Radio logic
+        // Startup View Logic
         val startWithSpeedo = prefs.getBoolean("startup_view_speedo", false)
         findViewById<RadioButton>(if (startWithSpeedo) R.id.radio_start_speedo else R.id.radio_start_clock)?.isChecked = true
         findViewById<RadioGroup>(R.id.radio_group_startup)?.setOnCheckedChangeListener { _, checkedId ->
             prefs.edit().putBoolean("startup_view_speedo", checkedId == R.id.radio_start_speedo).apply()
         }
 
-        // UI Scaling logic
+        // Dark Mode Logic
+        val darkModeSwitch = findViewById<SwitchCompat>(R.id.switch_dark_mode)
+        darkModeSwitch?.isChecked = prefs.getBoolean("is_dark_mode", true)
+        darkModeSwitch?.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean("is_dark_mode", isChecked).apply()
+            AppCompatDelegate.setDefaultNightMode(
+                if (isChecked) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+            )
+            recreate()
+        }
+
+        // Display Scaling Logic
         val scaleSeekBar = findViewById<SeekBar>(R.id.settings_scale_seekbar)
         val scaleValueText = findViewById<TextView>(R.id.settings_scale_value)
         val currentScale = prefs.getInt("ui_scale", 100)
-
         scaleSeekBar?.progress = currentScale - 50
         scaleValueText?.text = "$currentScale%"
-
         scaleSeekBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) {
                 val value = p + 50
@@ -161,7 +197,36 @@ class SettingsActivity : AppCompatActivity() {
                 prefs.edit().putInt("ui_scale", value).apply()
             }
             override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) { recreate() }
+            override fun onStopTrackingTouch(s: SeekBar?) {
+                recreate()
+            }
+        })
+
+        // NEW: Brightness Logic
+        val brightnessSeekBar = findViewById<SeekBar>(R.id.settings_brightness_seekbar)
+        try {
+            val curBrightness = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+            brightnessSeekBar?.progress = curBrightness
+        } catch (e: Exception) { e.printStackTrace() }
+
+        brightnessSeekBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        if (Settings.System.canWrite(this@SettingsActivity)) {
+                            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, progress)
+                        } else {
+                            val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                            intent.data = Uri.parse("package:$packageName")
+                            startActivity(intent)
+                        }
+                    } else {
+                        Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, progress)
+                    }
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
     }
 
@@ -203,7 +268,6 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun updateSoftwareInfo() {
         try {
-            // Memory & Storage Calculations
             val actManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val memInfo = ActivityManager.MemoryInfo()
             actManager.getMemoryInfo(memInfo)
@@ -214,22 +278,18 @@ class SettingsActivity : AppCompatActivity() {
             val availStorage = (stat.availableBlocksLong * stat.blockSizeLong) / 1073741824L
             val usedStorage = totalStorage - availStorage
 
-            // Get Version from Gradle (The "Build Version" fix)
             val currentVersionName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0)).versionName
             } else {
+                @Suppress("DEPRECATION")
                 packageManager.getPackageInfo(packageName, 0).versionName
             }
 
-            // Update UI
             findViewById<TextView>(R.id.info_device).text = "${Build.MODEL}\nSystem RAM: ${totalRam}GB"
             findViewById<TextView>(R.id.info_storage).text = "Used: ${usedStorage}GB / Total: ${totalStorage}GB"
             findViewById<TextView>(R.id.info_version).text = "Build Version: $currentVersionName\nAndroid OS: ${Build.VERSION.RELEASE}"
 
-        } catch (e: Exception) {
-            e.printStackTrace()
-            findViewById<TextView>(R.id.info_version).text = "Build Version: 1.0.8 (Fallback)"
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     private fun openGallery(launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
@@ -300,7 +360,7 @@ class SettingsActivity : AppCompatActivity() {
                         handler.postDelayed(longClickRunnable!!, 600)
                     }
                     MotionEvent.ACTION_UP -> {
-                        view.setBackgroundColor(Color.BLACK)
+                        view.setBackgroundColor(Color.TRANSPARENT)
                         handler.removeCallbacks(longClickRunnable!!)
                         if (!isLongPressTriggered) {
                             val launchIntent = pm.getLaunchIntentForPackage(pkgName)
@@ -309,7 +369,7 @@ class SettingsActivity : AppCompatActivity() {
                         }
                     }
                     MotionEvent.ACTION_CANCEL -> {
-                        view.setBackgroundColor(Color.BLACK)
+                        view.setBackgroundColor(Color.TRANSPARENT)
                         handler.removeCallbacks(longClickRunnable!!)
                     }
                 }

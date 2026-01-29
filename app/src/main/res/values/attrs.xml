@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <attr name="mainBgColor" format="color" />
+    <attr name="sidebarBgColor" format="color" />
+    <attr name="cardBgColor" format="color" />
+    <attr name="primaryTextColor" format="color" />
+</resources>

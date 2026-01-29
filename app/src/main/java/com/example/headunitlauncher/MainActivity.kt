@@ -3,6 +3,7 @@ package com.example.headunitlauncher
 import android.Manifest
 import android.content.*
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.location.*
 import android.media.AudioManager
@@ -15,6 +16,7 @@ import android.text.style.*
 import android.view.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.view.*
 import androidx.recyclerview.widget.*
@@ -27,6 +29,28 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var isMusicPlaying = false
     private var lastUserTapTime: Long = 0
     private val BLOCK_SYSTEM_UPDATES_MS = 1500L
+
+    // --- NEW: THEME & SCALE ENGINE ---
+    override fun attachBaseContext(newBase: Context) {
+        val prefs = newBase.getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
+        val scalePercent = prefs.getInt("ui_scale", 100)
+        val isDarkMode = prefs.getBoolean("is_dark_mode", true)
+
+        val config = Configuration(newBase.resources.configuration)
+
+        // Apply DPI Scaling
+        config.densityDpi = (newBase.resources.displayMetrics.densityDpi * (scalePercent / 100f)).toInt()
+
+        // Apply Dark/Light Mode Configuration
+        config.uiMode = if (isDarkMode) {
+            (config.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_YES
+        } else {
+            (config.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or Configuration.UI_MODE_NIGHT_NO
+        }
+
+        val context = newBase.createConfigurationContext(config)
+        super.attachBaseContext(context)
+    }
 
     private val musicReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -41,8 +65,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // [FIX] Removed System Splash API to kill the icon flicker
-        applySavedScale()
+        // Force theme before super.onCreate
+        val prefs = getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
+        val isDarkMode = prefs.getBoolean("is_dark_mode", true)
+        AppCompatDelegate.setDefaultNightMode(
+            if (isDarkMode) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+        )
+
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -51,32 +80,18 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         initializeUI()
 
-        // Handle the custom splash text fade-out after 2 seconds
+        // Handle the custom splash text fade-out
         Handler(Looper.getMainLooper()).postDelayed({
-            // Reveal main UI
             mainContent?.animate()?.alpha(1f)?.setDuration(600)?.start()
-
-            // Fade out overlay
             splashOverlay?.animate()?.alpha(0f)?.setDuration(600)?.withEndAction {
                 splashOverlay.visibility = View.GONE
             }?.start()
         }, 2000)
     }
 
-    private fun applySavedScale() {
-        val prefs = getSharedPreferences("TeslaLauncher", Context.MODE_PRIVATE)
-        val savedScale = prefs.getInt("ui_scale", 100) / 100f
-        val config = resources.configuration
-        val metrics = resources.displayMetrics
-        if (savedScale > 0.1f) {
-            config.densityDpi = (160 * metrics.density * savedScale).toInt()
-            resources.updateConfiguration(config, metrics)
-        }
-    }
-
     private fun initializeUI() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.setBackgroundDrawableResource(android.R.color.black)
+        // Background will now follow ?attr/mainBgColor from XML automatically
 
         audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
@@ -144,9 +159,18 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val speedStr = speed.toString()
         val fullText = "$speedStr Km/u"
         val spannable = SpannableString(fullText)
+
+        // Speed number
         spannable.setSpan(RelativeSizeSpan(2.5f), 0, speedStr.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+        // "Km/u" label
         spannable.setSpan(RelativeSizeSpan(0.6f), speedStr.length, fullText.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-        spannable.setSpan(ForegroundColorSpan(Color.parseColor("#888888")), speedStr.length, fullText.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+        // Use a semi-transparent version of the primary text color instead of hardcoded gray
+        val labelColor = if (AppCompatDelegate.getDefaultNightMode() == AppCompatDelegate.MODE_NIGHT_YES)
+            Color.parseColor("#88FFFFFF") else Color.parseColor("#88000000")
+
+        spannable.setSpan(ForegroundColorSpan(labelColor), speedStr.length, fullText.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         speedTextView.text = spannable
     }
 
@@ -252,8 +276,20 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     override fun onLocationChanged(l: Location) { runOnUiThread { setStyledSpeed((l.speed * 3.6).toInt()) } }
-    override fun onResume() { super.onResume(); hideSystemUI(); refreshUI() }
-    override fun onDestroy() { super.onDestroy(); try { unregisterReceiver(musicReceiver) } catch (e: Exception) {}; locationManager?.removeUpdates(this) }
+    override fun onResume() {
+        super.onResume()
+        hideSystemUI()
+        // We don't call recreate() here because the Save & Exit button in Settings
+        // already restarts the whole process, which is cleaner.
+        refreshUI()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(musicReceiver) } catch (e: Exception) {}
+        locationManager?.removeUpdates(this)
+    }
+
     override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
     override fun onProviderEnabled(p: String) {}
     override fun onProviderDisabled(p: String) {}
